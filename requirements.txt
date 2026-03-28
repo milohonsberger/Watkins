@@ -1,0 +1,9 @@
+streamlit>=1.30.0
+pypdf>=4.0.0
+google-adk
+google-genai
+geopandas>=0.14.0
+geopy>=2.4.0
+openpyxl>=3.1.0
+shapely>=2.0.0
+python-dotenv>=1.0.0
