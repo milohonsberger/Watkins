@@ -5,10 +5,12 @@ Streamlit UI for the Watkins GeoExtraction Platform.
 This file is a thin wrapper — all logic lives in core/.
 """
 
+import io
 import logging
 import os
 import re
 import tempfile
+import zipfile
 
 import streamlit as st
 from dotenv import load_dotenv
@@ -293,32 +295,39 @@ if st.session_state.batch_results:
         os.unlink(tmp_path)
         return data
 
-    for idx, r in enumerate(st.session_state.batch_results):
-        # Derive filename stem from extracted project name, fall back to PDF filename
+    def _make_zip(entries):
+        """entries: list of (filename, bytes). Returns zip bytes."""
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+            for name, data in entries:
+                zf.writestr(name, data)
+        return buf.getvalue()
+
+    # Pre-compute per-file export data so batch and individual buttons share the same logic
+    file_exports = []
+    for r in st.session_state.batch_results:
         _raw = r["metadata"].get("project_name", "")
         if _raw and _raw not in ("NOT FOUND", "EXTRACTION FAILED"):
             stem = re.sub(r'[^\w\-]', '_', _raw).strip('_')[:80]
         else:
             stem = os.path.splitext(r["filename"])[0]
 
-        # Rows for this file (use edited combined rows filtered by source_file)
         file_rows = [row for row in all_edited_rows if row.get("source_file") == r["filename"]]
-
         spatial_records = [g for g in r["geocoded_locations"] if g.get("latitude") is not None]
 
-        def _geo_features_for(rows, result):
-            geo = spatial_records[0] if spatial_records else {}
-            geo_fields = {
-                "latitude":           geo.get("latitude"),
-                "longitude":          geo.get("longitude"),
-                "geocode_source":     geo.get("geocode_source", ""),
-                "geocode_confidence": geo.get("geocode_confidence", 0),
-                "geocode_status":     geo.get("geocode_status", ""),
-            }
-            flat_meta = {f"meta_{k}": v for k, v in result["metadata"].items()}
-            if rows:
-                return [{**row, **flat_meta, **geo_fields} for row in rows]
-            return [{**flat_meta, **geo_fields}] if spatial_records else []
+        geo = spatial_records[0] if spatial_records else {}
+        geo_fields = {
+            "latitude":           geo.get("latitude"),
+            "longitude":          geo.get("longitude"),
+            "geocode_source":     geo.get("geocode_source", ""),
+            "geocode_confidence": geo.get("geocode_confidence", 0),
+            "geocode_status":     geo.get("geocode_status", ""),
+        }
+        flat_meta = {f"meta_{k}": v for k, v in r["metadata"].items()}
+        if file_rows:
+            geo_features = [{**row, **flat_meta, **geo_fields} for row in file_rows]
+        else:
+            geo_features = [{**flat_meta, **geo_fields}] if spatial_records else []
 
         export_meta = {
             "source_file":    r["filename"],
@@ -327,15 +336,101 @@ if st.session_state.batch_results:
             "geocoded_count": sum(1 for g in r["geocoded_locations"] if g.get("geocode_status") == "success"),
         }
 
-        st.caption(f"**{stem}**")
+        file_exports.append({
+            "stem":            stem,
+            "file_rows":       file_rows,
+            "spatial_records": spatial_records,
+            "geo_features":    geo_features,
+            "export_meta":     export_meta,
+            "metadata":        r["metadata"],
+        })
+
+    # ── Batch download (shown only when more than one file was processed)
+    if len(file_exports) > 1:
+        st.caption("**Download all**")
+        col_xl, col_csv, col_gpkg, col_geojson = st.columns(4)
+
+        with col_xl:
+            st.download_button(
+                "⬇ All Excel",
+                _make_zip([
+                    (f"{fe['stem']}.xlsx",
+                     _export_bytes(".xlsx", lambda p, fe=fe: to_excel(
+                         fe["file_rows"], p,
+                         metadata=fe["metadata"], export_metadata=fe["export_meta"])))
+                    for fe in file_exports
+                ]),
+                "all_excel.zip",
+                mime="application/zip",
+                use_container_width=True,
+                key="dl_all_xl",
+            )
+
+        with col_csv:
+            st.download_button(
+                "⬇ All CSV",
+                _make_zip([
+                    (f"{fe['stem']}.csv",
+                     _export_bytes(".csv", lambda p, fe=fe: to_csv(fe["file_rows"], p)))
+                    for fe in file_exports
+                ]),
+                "all_csv.zip",
+                mime="application/zip",
+                use_container_width=True,
+                key="dl_all_csv",
+            )
+
+        with col_gpkg:
+            geo_exports = [fe for fe in file_exports if fe["spatial_records"]]
+            if geo_exports:
+                st.download_button(
+                    "⬇ All GeoPackage",
+                    _make_zip([
+                        (f"{fe['stem']}.gpkg",
+                         _export_bytes(".gpkg", lambda p, fe=fe: to_geopackage(fe["geo_features"], p)))
+                        for fe in geo_exports
+                    ]),
+                    "all_gpkg.zip",
+                    mime="application/zip",
+                    use_container_width=True,
+                    key="dl_all_gpkg",
+                )
+            else:
+                st.button("⬇ All GeoPackage", disabled=True, use_container_width=True,
+                          key="dl_all_gpkg_dis", help="No geocoded locations available.")
+
+        with col_geojson:
+            if geo_exports:
+                st.download_button(
+                    "⬇ All GeoJSON",
+                    _make_zip([
+                        (f"{fe['stem']}.geojson",
+                         _export_bytes(".geojson", lambda p, fe=fe: to_geojson(fe["geo_features"], p)))
+                        for fe in geo_exports
+                    ]),
+                    "all_geojson.zip",
+                    mime="application/zip",
+                    use_container_width=True,
+                    key="dl_all_geojson",
+                )
+            else:
+                st.button("⬇ All GeoJSON", disabled=True, use_container_width=True,
+                          key="dl_all_geojson_dis", help="No geocoded locations available.")
+
+        st.divider()
+
+    # ── Per-file download buttons
+    for idx, fe in enumerate(file_exports):
+        st.caption(f"**{fe['stem']}**")
         col_xl, col_csv, col_gpkg, col_geojson = st.columns(4)
 
         with col_xl:
             st.download_button(
                 "⬇ Excel",
-                _export_bytes(".xlsx", lambda p, rows=file_rows, meta=r["metadata"], em=export_meta:
-                    to_excel(rows, p, metadata=meta, export_metadata=em)),
-                f"{stem}.xlsx",
+                _export_bytes(".xlsx", lambda p, fe=fe: to_excel(
+                    fe["file_rows"], p,
+                    metadata=fe["metadata"], export_metadata=fe["export_meta"])),
+                f"{fe['stem']}.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 use_container_width=True,
                 key=f"dl_xl_{idx}",
@@ -344,20 +439,19 @@ if st.session_state.batch_results:
         with col_csv:
             st.download_button(
                 "⬇ CSV",
-                _export_bytes(".csv", lambda p, rows=file_rows: to_csv(rows, p)),
-                f"{stem}.csv",
+                _export_bytes(".csv", lambda p, fe=fe: to_csv(fe["file_rows"], p)),
+                f"{fe['stem']}.csv",
                 mime="text/csv",
                 use_container_width=True,
                 key=f"dl_csv_{idx}",
             )
 
         with col_gpkg:
-            if spatial_records:
+            if fe["spatial_records"]:
                 st.download_button(
                     "⬇ GeoPackage",
-                    _export_bytes(".gpkg", lambda p, rows=file_rows, res=r:
-                        to_geopackage(_geo_features_for(rows, res), p)),
-                    f"{stem}.gpkg",
+                    _export_bytes(".gpkg", lambda p, fe=fe: to_geopackage(fe["geo_features"], p)),
+                    f"{fe['stem']}.gpkg",
                     mime="application/octet-stream",
                     use_container_width=True,
                     key=f"dl_gpkg_{idx}",
@@ -367,12 +461,11 @@ if st.session_state.batch_results:
                           key=f"dl_gpkg_dis_{idx}", help="No geocoded locations available.")
 
         with col_geojson:
-            if spatial_records:
+            if fe["spatial_records"]:
                 st.download_button(
                     "⬇ GeoJSON",
-                    _export_bytes(".geojson", lambda p, rows=file_rows, res=r:
-                        to_geojson(_geo_features_for(rows, res), p)),
-                    f"{stem}.geojson",
+                    _export_bytes(".geojson", lambda p, fe=fe: to_geojson(fe["geo_features"], p)),
+                    f"{fe['stem']}.geojson",
                     mime="application/geo+json",
                     use_container_width=True,
                     key=f"dl_geojson_{idx}",
@@ -381,5 +474,5 @@ if st.session_state.batch_results:
                 st.button("⬇ GeoJSON", disabled=True, use_container_width=True,
                           key=f"dl_geojson_dis_{idx}", help="No geocoded locations available.")
 
-        if idx < len(st.session_state.batch_results) - 1:
+        if idx < len(file_exports) - 1:
             st.divider()
