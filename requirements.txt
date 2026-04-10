@@ -1,5 +1,5 @@
 streamlit>=1.30.0
-pypdf>=4.0.0
+pymupdf>=1.24.0
 google-adk
 google-genai
 geopandas>=0.14.0
