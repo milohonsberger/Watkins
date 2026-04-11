@@ -1,5 +1,5 @@
 @echo off
-cd /d C:\geo_platform
+cd /d C:\Watkins
 
 if not exist venv (
     echo Creating virtual environment...

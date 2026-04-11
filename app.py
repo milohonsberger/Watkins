@@ -50,6 +50,8 @@ def _init_state():
         "custom_rows":        None,
         "schema_validation":  None,
         "spatial_validation": None,
+        # per-file target sections: {filename: str}
+        "target_sections":    {},
     }
     for key, val in defaults.items():
         if key not in st.session_state:
@@ -100,12 +102,6 @@ with st.sidebar:
     if len(st.session_state.schema_columns) > 20:
         st.warning("More than 20 columns defined. The LLM may produce incomplete results.")
 
-    st.divider()
-    target_section = st.text_input(
-        "Target section / table (optional)",
-        placeholder="e.g. Appendix A, Table 3",
-        help="Leave blank to search the entire document.",
-    )
 
 
 # ── Main area ──────────────────────────────────────────────────────────────────
@@ -129,14 +125,26 @@ if not valid_columns:
     st.warning("Define at least one column with a name and description before running.")
     st.stop()
 
+# ── Per-file target sections ───────────────────────────────────────────────────
+
+with st.expander("Target sections (optional)", expanded=False):
+    st.caption("Narrow each file's extraction to a specific section or table. Leave blank to search the entire document.")
+    for uploaded_file in uploaded_files:
+        fname = uploaded_file.name
+        current = st.session_state.target_sections.get(fname, "")
+        val = st.text_input(
+            fname,
+            value=current,
+            placeholder="e.g. Appendix A, Table 3",
+            key=f"target_{fname}",
+        )
+        st.session_state.target_sections[fname] = val
+
 # ── Run pipeline ───────────────────────────────────────────────────────────────
 
 if st.button("▶ Run Extraction", type="primary", use_container_width=True):
-    schema = ExtractionSchema(
-        columns=[ColumnDef(name=c["name"].strip(), description=c["description"].strip())
-                 for c in valid_columns],
-        target_section=target_section.strip() or None,
-    )
+    base_columns = [ColumnDef(name=c["name"].strip(), description=c["description"].strip())
+                    for c in valid_columns]
 
     st.session_state.batch_results = []
     st.session_state.custom_rows = None
@@ -145,6 +153,8 @@ if st.button("▶ Run Extraction", type="primary", use_container_width=True):
 
     for uploaded_file in uploaded_files:
         fname = uploaded_file.name
+        target = st.session_state.target_sections.get(fname, "").strip() or None
+        schema = ExtractionSchema(columns=base_columns, target_section=target)
         with st.status(f"Processing {fname}…", expanded=True) as status:
             result = {"filename": fname, "metadata": {}, "geocoded_locations": [], "custom_rows": []}
 
@@ -199,12 +209,13 @@ if st.button("▶ Run Extraction", type="primary", use_container_width=True):
 
     # Validate combined results
     all_geocoded = [g for r in st.session_state.batch_results for g in r["geocoded_locations"]]
+    schema_for_validation = ExtractionSchema(columns=base_columns)
     if combined_rows:
-        st.session_state.schema_validation = validate_schema(combined_rows, schema)
+        st.session_state.schema_validation = validate_schema(combined_rows, schema_for_validation)
     if all_geocoded:
         st.session_state.spatial_validation = validate_spatial(all_geocoded)
 
-    st.session_state["_schema_used"] = schema
+    st.session_state["_schema_used"] = schema_for_validation
 
 
 # ── Results ────────────────────────────────────────────────────────────────────
