@@ -231,7 +231,9 @@ if st.session_state.batch_results:
             if meta:
                 cols = st.columns(3)
                 for i, (key, val) in enumerate(meta.items()):
-                    cols[i % 3].metric(key.replace("_", " ").title(), val)
+                    col = cols[i % 3]
+                    col.markdown(f"**{key.replace('_', ' ').title()}**")
+                    col.caption(str(val))
             else:
                 st.caption("No metadata extracted.")
 
